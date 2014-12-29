@@ -4,8 +4,7 @@ require 'yaml'
 class RetweetStream
   
   attr_accessor :window_minutes
-  attr_reader :original_tweets
-  attr_reader :twitter_statuses
+  attr_reader :retweeted_tweets
   attr_accessor :retweets
 
   def initialize
@@ -20,11 +19,9 @@ class RetweetStream
     end
 
     @retweets = [] #array of arrays: [[retweet-id, original-tweet-id, timestamp]]
-    @original_tweets = Hash.new{0} #hash to aggregate retweet counts {tweet-id => retweet-count}
     @current_top_ten = [] #stores the current top ten, so if it doesn't change, we don't reprint
-    @twitter_statuses = {} #stores the status of any tweets that have been in the top ten {tweet-id => status}
-    #TODO if possible, later combine original_tweets & twitter_statuses into a single hash {tweet-id => [retweet-count, status]}
-        
+    @retweeted_tweets = Hash.new {|h,k| h[k] = [0,'']} #hash to aggregate retweet counts {tweet-id => [retweet-count, status]}
+
   end
 
   def stream
@@ -33,7 +30,7 @@ class RetweetStream
       #if this is a retweet in the time window, delete it and update Top10
       @retweets.delete_if do |retweet|
         if retweet[0] == status_id
-          update_original_tweets(retweet[1], -1)
+          update_retweeted_tweets(retweet[1], -1)
           true
         end
       end
@@ -45,11 +42,8 @@ class RetweetStream
     }.sample do |status|
       if status.retweeted_status?
         @retweets.push([status.id, status.retweeted_status.id, status.created_at])
-        update_original_tweets(status.retweeted_status.id, 1)
-        unless @twitter_statuses.has_key?(status.retweeted_status.id) 
-          @twitter_statuses[status.retweeted_status.id] = status.retweeted_status.text 
-        end
-        
+        update_retweeted_tweets(status.retweeted_status.id, 1, status.retweeted_status.text)
+
         cleanup_retweet_window
 
         print_top_ten
@@ -57,11 +51,11 @@ class RetweetStream
     end
   end
 
-  def update_original_tweets(id, increment)
-    @original_tweets[id] += increment
-    if (@original_tweets[id] < 1)
-      @original_tweets.delete(id)
-      @twitter_statuses.delete(id) 
+  def update_retweeted_tweets(id, increment, status = '')
+    @retweeted_tweets[id][0] += increment
+    @retweeted_tweets[id][1] = status unless status == ''
+    if @retweeted_tweets[id][0] < 1
+      @retweeted_tweets.delete(id)
     end
   end
 
@@ -73,7 +67,7 @@ class RetweetStream
     @retweets.each do |retweet|
       if retweet[2] < cutoff_time #retweet[2] is the timestamp of the retweet
         drop_index += 1
-        update_original_tweets(retweet[1], -1)
+        update_retweeted_tweets(retweet[1], -1)
       else
         break
       end
@@ -83,20 +77,20 @@ class RetweetStream
 
   #this function could possibly be condensed to a few lines but I erred on the side of readability over elegance
   def find_top_ten
-    sorted_tweets = @original_tweets.sort_by {|k, v| v}.reverse
+    sorted_tweets = @retweeted_tweets.sort_by {|k, v| v[0]}.reverse
     top_number = sorted_tweets.length > 10 ? 10 : sorted_tweets.length
     sorted_tweets = sorted_tweets.take(top_number)
   end
 
   def print_top_ten
-    if @original_tweets.length > 1 
+    if @retweeted_tweets.length > 1
       sorted_tweets = find_top_ten
       diff = sorted_tweets - @current_top_ten unless @current_top_ten.nil?
       if @current_top_ten.nil? || !diff.empty?
         puts "***********"
         puts "Top #{sorted_tweets.length} retweeted tweets in last #{window_minutes} minute(s):"
         sorted_tweets.each do |tweet|
-          puts "Retweets #{tweet[1]}: #{@twitter_statuses[tweet[0]]} "
+          puts "Retweets #{tweet[1][0]}: #{tweet[1][1]} "
         end
         puts "***********"
         @current_top_ten = sorted_tweets
